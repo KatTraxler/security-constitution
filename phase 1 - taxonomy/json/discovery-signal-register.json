@@ -1,0 +1,82 @@
+{
+  "document": {
+    "title": "Discovery Signal Register",
+    "subtitle": "Reusable Documentation And API Clues",
+    "source_markdown": "../markdown/discovery-signal-register.md",
+    "purpose": "Catalog static documentation and API clues that route review toward vulnerability shapes, hypotheses, and probes without treating the clue itself as a confirmed design flaw."
+  },
+  "relationships": {
+    "feature-abuse-reference.md": "Negative calibration cases the model should reject as non-flaws.",
+    "discovery-signal-register.md": "Documentation and API clues that route investigation.",
+    "design-shape-register.md": "Reusable vulnerability structures and missing-control tests."
+  },
+  "cardinality_model": {
+    "dfc_identity": "One DFC is one publicly reported insecure-by-design flaw instance.",
+    "dfc_to_shapes": "One-to-many: each DFC may map to one or more Shapes.",
+    "shapes_to_signals": "Many-to-many: each Shape may produce multiple Signals and each Signal may route to multiple Shapes."
+  },
+  "artifact_flow": [
+    "Feature Abuse Reference",
+    "Discovery Signal Register + Design Shape Register",
+    "Phase 2 Security Constitution artifacts"
+  ],
+  "phase": "Phase 1B: Discovery Signals, Shape Register, and Cross-Lens Synthesis",
+  "entry_schema": [
+    "ID",
+    "Name",
+    "Validation status",
+    "Signal question",
+    "Why suspicious",
+    "Routes to",
+    "Not sufficient when",
+    "Promotion test",
+    "Scanner / probe mapping",
+    "Security Constitution lesson"
+  ],
+  "signals": [
+    {
+      "id": "SIGNAL-001",
+      "name": "GCP Managed Service Agent Acts On Referenced Resource",
+      "signal_question": "Does documentation or API schema say a provider-managed service agent, or a \"service account configured for your project,\" reads, writes, imports, exports, syncs, runs code, pulls images, uses secrets/connections, or otherwise operates on caller-supplied resources?",
+      "why_suspicious": "A managed service agent may hold effective resource authority broader than the invoking caller's direct IAM permissions.",
+      "routes_to": "Primary: `SHAPE-001` (provider-managed service-agent effective-permission invocation without caller authorization). Also the cross-boundary data-movement and audit-attribution shapes when the agent then moves data or obscures attribution.",
+      "not_sufficient_when": "The API performs caller-bound authorization on every referenced resource, requires explicit service-account delegation, or only operates on resources the caller already controls.",
+      "promotion_test": "Show that a low-privilege caller with invoke permission but no direct resource permission can cause the managed service agent to access the referenced resource or produce downstream output.",
+      "constitution_lesson": "Treat service-agent documentation as a routing clue. Promote only after checking whether the invoking caller was authorized for the resource the service agent used.",
+      "signal_cues": "Request fields that name a caller-supplied source/sink/code/image/secret/connection/resource URI; docs phrases such as \"service agent,\" \"service account configured for your project,\" \"default service account,\" \"runs as,\" and \"users with create permission can access data\"; managed-agent roles carrying data-plane read/write permissions; audit chains where the caller creates a job and the managed agent performs the data-plane action. When the referenced resource is a **network attachment / PSC interface / VPC connector**, route to `SIGNAL-010` / `SHAPE-013` — the privileged action is then network presence inside the customer VPC, not a data read."
+    },
+    {
+      "id": "SIGNAL-010",
+      "name": "Managed Service Reaches Private Customer Resources Via Caller-Supplied Network Attachment",
+      "signal_question": "Does documentation or API schema say a managed service connects to a customer's **private / internal-only** database or host using a **caller-supplied network or connectivity reference** — a PSC network attachment, Private Service Connect interface, VPC connector, private endpoint, or hybrid connection — while the managed service itself runs in a **provider-owned / shared producer project**? Equivalently: does a PSC network attachment's endpoints show a **shared producer project** appearing across different customer tenants, or is the attachment set to automatically accept connections?",
+      "why_suspicious": "The connectivity resource is a cross-boundary reference, and the deputy's privileged action is **establishing network presence inside the customer's VPC** rather than reading a storage/IAM resource. If the managed service does not bind the caller's authorization to that network resource and the producer identity is **shared across all tenants**, a caller with no rights to another tenant can drive the shared fleet into that tenant's private network — gated only by an owner-side accept-list that cannot distinguish the owner's own use from an attacker's. An automatic-accept default makes the exposed state the realistic one, and the shared producer is what lifts impact from within-tenant to cross-tenant.",
+      "routes_to": "Primary: `SHAPE-013` (caller-supplied network-attachment deputy). Also `SHAPE-001` when the referent is a data resource, and the cross-boundary data-movement shape when the deputy then moves data over the network presence. Compose with the cross-service-handoff and shared-fleet-severity signals.",
+      "not_sufficient_when": "The service requires the caller to hold `compute.networkAttachments.use` (or ownership/grant) on the referenced attachment before the deputy acts; the deputy connects through a customer-managed connector identity gated by the attachment gate; the producer identity is **per-tenant** so owner-side allowlisting scopes admission to the owner's own use; or the deputy can only reach networks the caller already controls. Reaching a private resource inside the caller's own VPC is not the signal.",
+      "promotion_test": "A low-privilege caller in tenant B (no `.use`, no compute permission, no access to victim tenant A) supplies A's network attachment plus a private internal host inside A's VPC and triggers the managed operation; show the shared producer attaches inside A's VPC and data from A's private source becomes observable to the caller, or the caller obtains an internal reachability/port oracle.",
+      "constitution_lesson": "A caller-supplied network/connectivity reference is a routing clue for a network-presence confused deputy. Do not stop at \"the service can reach my private DB\" — ask (a) whether the managed deputy binds the caller's authorization to the network resource, and (b) whether the producer identity is shared across tenants. Two distinct impact axes, not to be conflated: **cross-tenant** impact requires a **shared fleet** (a per-tenant producer is cross-tenant-safe incidentally); **intra-project** impact is conditional and often blind/write-only — treat it as an authorization-model observation until concrete escalation is shown.",
+      "signal_cues": "Request fields naming a network attachment, PSC interface, VPC connector, private endpoint, or egress setting; docs phrases such as \"network attachment,\" \"Private Service Connect interface,\" \"so the service can reach resources in your VPC / on private IP / on-premises,\" and \"the connector runs in a provider-managed project\"; an automatic-accept connection preference; a **shared producer project** observed across multiple tenants."
+    },
+    {
+      "id": "SIGNAL-015",
+      "name": "Caller-Supplied Customer-Managed Run-As Service Account On A Binding/Activation Method",
+      "signal_question": "Does a product API **binding or activation** method accept a caller-supplied field naming a **customer-managed** service account that the resource or operation will **run as** (e.g. `serviceAccount`, `serviceAccountEmail`, `runtimeServiceAccount`) — an identity-binding field, distinct from a provider-managed service agent — and fail to enforce the caller's attachment gate (`iam.serviceAccounts.actAs`)?",
+      "why_suspicious": "Binding or activating a customer-managed SA is exactly the action the attachment gate governs. If a method does not enforce it, a low-privilege caller can select an arbitrary, more-privileged SA for a persistent resource or one-shot operation — a privilege escalation whose ceiling is the most-privileged SA in the project. The gate governs binding/activation, not later use, so ordinary invocation of an already-bound resource remains a negative.",
+      "routes_to": "Primary: `SHAPE-016` (customer-managed run-as binding without the attachment gate). **If the run-as identity is a provider-managed service agent** instead, route to `SIGNAL-001` / `SHAPE-001` — the attachment gate is structurally inapplicable there and the control is a caller-bound check on the referenced resource.",
+      "not_sufficient_when": "The attachment gate is enforced (the no-gate caller is denied); the field is immutable / output-only / not in the update mask; the field supplies operational input that cannot change the execution identity; the named identity is a provider-managed service agent (→ `SIGNAL-001`); or the caller already holds the gate (no delta). A caller-bound check on a resource the SA later reads is the `SHAPE-001` control, not this one.",
+      "promotion_test": "As a caller holding the product create/update permission but no attachment gate on a named target SA, call the binding method naming that SA; confirm acceptance (no gate denial) and that the **bound SA — not the caller —** performs the privileged action (via access logs). Calibrate against an enforcing sibling (a create method that denies the same caller+SA on the attachment gate). For a patch variant, also test whether the SA field is accepted in the update mask (mutable) or rejected (immutable).",
+      "constitution_lesson": "A caller-supplied customer-managed run-as SA field routes to `SHAPE-016`. Promote only after confirming the named identity is customer-managed (not a provider agent — that's `SIGNAL-001`), the field actually changes the execution identity (not operational input), and the method does not enforce the caller's attachment gate. The service agent that physically impersonates the bound SA is normal run-as plumbing, never the locus.",
+      "signal_cues": "Request fields in run-as position (`serviceAccount`, `serviceAccountEmail`, `runtimeServiceAccount`, `*.serviceAccount`); doc phrases \"the service account the resource runs as,\" \"specify a service account,\" \"run-as,\" \"identity used by …\"; a `create` or an `update`/`patch` whose update mask includes the SA field; a method-granting role that lacks the attachment gate. Distinguish from provider-managed service-agent references (→ `SIGNAL-001`) and from output-only / owner / created-by fields. Mature services generally enforce the gate; the signal concentrates in newer / off-list services, and a same-feature sibling that enforces is the best calibration."
+    },
+    {
+      "id": "SIGNAL-031",
+      "name": "Config-Edit Role Retargets a Managed Deputy's Credential-Delivery Endpoint Despite a Read/Retrieve Wall On That Secret",
+      "signal_question": "Can a principal holding only a resource-config/edit role — one the platform deliberately **walls** from a stored secret (the secret is write-only/redacted on read AND a dedicated retrieve/get is denied to it) — change a field that names the **endpoint a managed deputy sends that secret to** (an OAuth token/authorization URL, a webhook/callback URL with a signing secret, a notification/relay target), so the deputy then delivers the walled secret to a caller-chosen destination?",
+      "why_suspicious": "The platform's own two-way wall (redacted read + denied retrieve) is explicit evidence the config-edit role is not meant to obtain the secret, yet the same role can rewrite where the deputy delivers it. Changing the delivery endpoint is legitimate configuration; having the stored, unread secret transmitted to that endpoint is an unintended egress channel that defeats the wall. The finding is disclosure-by-redirection, not the caller reading the secret directly.",
+      "routes_to": "Primary: `SHAPE-032` (caller-redirectable credential-delivery endpoint). Sibling of the broader signal where a caller-configurable callback attaches a beyond-authority identity token; route instead to the SSRF shape if the borrowed authority is internal network reach, or to `SHAPE-021` if the secret is disclosed on the read path with no retarget.",
+      "not_sufficient_when": "The edit role can also read or retrieve the secret directly (no wall → intended config, WAI); the endpoint change re-checks secret-retrieval authority or invalidates the stored secret; the endpoint is validated/registered (redirect-URI-style allowlist); the deputy attaches no secret; the endpoint field is immutable after create; or exploitation needs a classic SSRF/parser bug rather than the supported endpoint-config feature. A caller who already owns the secret redirecting its own delivery is not this signal.",
+      "promotion_test": "As the restricted config-edit role: (1) confirm the wall — a `get` returns the secret redacted AND the dedicated retrieve/get is denied; (2) change only the delivery-endpoint field, preserving the unread secret, and confirm it applied; (3) fire the deputy (a bound retrieve, a webhook, a scheduled send) and capture what arrives at a caller-chosen endpoint; (4) match the captured value to the resource's configured secret and record the transport; (5) confirm no read/retrieve path to the original secret. Confirm only when the walled secret reaches the caller-chosen endpoint.",
+      "constitution_lesson": "The authority to change **where** a managed deputy delivers a credential must be bound to the authority to **receive** that credential. A platform that walls a config-edit role off a secret but lets it rewrite the deputy's delivery endpoint has turned an endpoint field into an egress channel for the walled secret. Screen for WAI by the platform's own wall first: if the edit role can read or retrieve the secret, redirecting the endpoint is intended configuration.",
+      "signal_cues": "Editable delivery-endpoint fields adjacent to a separately-gated stored secret: an OAuth token/authorization URL with a write-only client secret; a webhook/callback/notification endpoint with a signing secret or bearer; an SMTP/relay host with stored credentials. Tell: the secret field is write-only/redacted on read (a full view still redacts, or a dedicated secret-getter exists) AND the edit role is denied that retrieve, while the endpoint field is freely editable."
+    }
+  ]
+}
